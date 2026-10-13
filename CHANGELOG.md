@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+* Feat: Interaction Model quiescence tracking (`im::InteractionQuiescence`): an application can wait for the model to become idle - no in-flight interaction or outbound `ReportData` action, including all of its chunks - and then synchronously reconfigure the node shape, bump `ConfigurationVersion` and notify the affected clusters, without stopping new requests or tearing down sessions and established subscriptions
 * Fix: a failed subscription report no longer removes a session to the subscriber, which could hit a newer, healthy session to the same peer; the transport already expires a session whose peer stopped acknowledging (#594)
 * Fix: attribute changes made while a new subscription's priming report is in flight are no longer purged before that subscription reports them (#592)
 * Fix: completing a subscription priming report preserves another in-flight report and its cancellation (#591)

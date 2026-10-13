@@ -28,7 +28,7 @@ use crate::dm::{EventId, EventNumber, Metadata};
 use crate::error::{Error, ErrorCode};
 use crate::im::encoding::{EventPriority, IMBuffer, NodeId};
 use crate::im::events::EventTLVWrite;
-use crate::im::ImStats;
+use crate::im::{ImStats, InteractionQuiescence};
 use crate::persist::KvBlobStoreAccess;
 use crate::tlv::TLVElement;
 use crate::transport::exchange::Exchange;
@@ -288,6 +288,18 @@ pub trait HandlerContext: AttrChangeNotifier + EventEmitter {
     /// General Diagnostics handler uses it for `DeviceLoadStatus`.
     fn im_stats(&self) -> impl ImStats + '_;
 
+    /// Return the quiescence tracker of the Interaction Model driving this
+    /// handler, if this context is backed by one.
+    ///
+    /// An application can [`wait`](InteractionQuiescence::wait_idle) on the
+    /// returned tracker and then synchronously reconfigure the node shape -
+    /// see [`InteractionQuiescence`] for the contract. `None` means the
+    /// context is not backed by a live Interaction Model (e.g. a synthetic
+    /// context in a unit test), so no in-flight interaction can be tracked.
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        None
+    }
+
     /// Notify that the fabric with the given local index has been removed
     /// from the fabric table, by synchronously broadcasting
     /// [`LifecycleOp::FabricRemoval`] to every handler in the data model.
@@ -336,6 +348,10 @@ where
 
     fn im_stats(&self) -> impl ImStats + '_ {
         (**self).im_stats()
+    }
+
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        (**self).quiescence()
     }
 
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {
@@ -596,6 +612,10 @@ where
         self.context.im_stats()
     }
 
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        self.context.quiescence()
+    }
+
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {
         self.context.notify_fabric_removed(fab_idx);
     }
@@ -776,6 +796,10 @@ where
         self.context.im_stats()
     }
 
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        self.context.quiescence()
+    }
+
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {
         self.context.notify_fabric_removed(fab_idx);
     }
@@ -900,6 +924,10 @@ where
 
     fn im_stats(&self) -> impl ImStats + '_ {
         self.context.im_stats()
+    }
+
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        self.context.quiescence()
     }
 
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {
@@ -1088,6 +1116,10 @@ where
 
     fn im_stats(&self) -> impl ImStats + '_ {
         self.context.im_stats()
+    }
+
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        self.context.quiescence()
     }
 
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {

@@ -31,16 +31,29 @@ use super::{EndptId, NodeId};
 /// # Invariants
 ///
 /// 1. Endpoints must be in **strictly increasing order** of `Endpoint::id`.
-/// 2. Per-endpoint shape is **stable for the endpoint's lifetime**.
-///    Once an endpoint with a given id has been added to a `Node`, its
-///    `clusters` slice and each cluster's attribute / command / event
-///    lists must not change. Whole endpoints may still be added or
-///    removed at runtime. Mutating a cluster's attribute or server
-///    list is a change to F-quality metadata (Matter Core spec
-///    `AttributeList` / `ServerList`) and must be
-///    accompanied by a `ConfigurationVersion` bump, which in practice
-///    means a restart of the `rs-matter` service and likely - of the
-///    whole process anyway.
+/// 2. Per-endpoint shape is **stable while an interaction or an outbound
+///    report traverses the node**. Once an endpoint with a given id has been
+///    added to a `Node`, its `clusters` slice and each cluster's attribute /
+///    command / event lists must not change while the Interaction Model is
+///    busy with an interaction or a report.
+///
+///    Runtime changes are allowed at the Interaction Model's idle boundary:
+///    an application waits on
+///    [`InteractionQuiescence::wait_idle`](crate::im::InteractionQuiescence::wait_idle)
+///    and - without awaiting in between - applies the new shape, bumps
+///    `ConfigurationVersion` (see
+///    [`InteractionModel::bump_configuration_version`](crate::im::InteractionModel::bump_configuration_version))
+///    and notifies every affected cluster. A single-threaded executor cannot
+///    start another interaction between the resolved `wait_idle` and the end
+///    of that same poll, so every interaction and report observes one
+///    consistent configuration - and a fixed-attribute change and its
+///    `ConfigurationVersion` bump are delivered in the same `ReportData`
+///    action (chunking allowed).
+///
+///    Long-lived sessions, established subscriptions and actions held by an
+///    external executor are not in-flight interactions and do not keep the
+///    model busy. Whole endpoints may still be added or removed at runtime
+///    under the same idle rule.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Node<'a> {

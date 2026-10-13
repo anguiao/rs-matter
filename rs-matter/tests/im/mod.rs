@@ -19,6 +19,7 @@ mod client_invokes;
 mod client_reads;
 mod client_subscribes;
 mod client_writes;
+mod quiescence;
 #[cfg(feature = "persistent-subscriptions")]
 mod subscription_reboot;
 #[cfg(all(

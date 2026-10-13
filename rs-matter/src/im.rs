@@ -71,7 +71,10 @@ pub mod encoding;
 pub mod events;
 pub mod expand;
 pub mod invoker;
+pub mod quiescence;
 pub mod subscriptions;
+
+pub use quiescence::{InteractionGuard, InteractionQuiescence};
 
 /// Resource-utilisation metrics for the node, as reported by
 /// `GeneralDiagnostics::DeviceLoadStatus`.
@@ -163,6 +166,7 @@ pub struct InteractionModelState<
     subscriptions: Subscriptions<NS>,
     events: Events<NE>,
     networks: SharedNetworks<N>,
+    quiescence: InteractionQuiescence,
     start_up_emitted: Mutex<Cell<bool>>,
 }
 
@@ -173,6 +177,7 @@ impl<N, const NS: usize, const NE: usize> InteractionModelState<N, NS, NE> {
             subscriptions: Subscriptions::new(),
             events: Events::new(),
             networks: SharedNetworks::new(networks),
+            quiescence: InteractionQuiescence::new(),
             start_up_emitted: Mutex::new(Cell::new(false)),
         }
     }
@@ -184,6 +189,7 @@ impl<N, const NS: usize, const NE: usize> InteractionModelState<N, NS, NE> {
             subscriptions <- Subscriptions::init(),
             events <- Events::init(),
             networks <- SharedNetworks::init(networks),
+            quiescence <- InteractionQuiescence::init(),
             start_up_emitted: Mutex::new(Cell::new(false)),
         })
     }
@@ -266,6 +272,16 @@ impl<N, const NS: usize, const NE: usize> InteractionModelState<N, NS, NE> {
     /// The network store (wrapped for shared, change-notifying access).
     pub const fn networks(&self) -> &SharedNetworks<N> {
         &self.networks
+    }
+
+    /// The quiescence tracker of the Interaction Model that owns this state.
+    ///
+    /// An application can wait on it (and then synchronously reconfigure the
+    /// node shape) without holding a reference to the [`InteractionModel`]
+    /// itself - e.g. from inside a cluster handler's `run` future. See
+    /// [`InteractionQuiescence`] for the contract.
+    pub const fn quiescence(&self) -> &InteractionQuiescence {
+        &self.quiescence
     }
 }
 
@@ -753,6 +769,13 @@ where
 
     /// Answer a responding exchange using the `DataModel` instance wrapped by this exchange handler.
     pub async fn handle(&self, exchange: &mut Exchange<'_>) -> Result<(), Error> {
+        // One inbound interaction (read, write, invoke, timed request, subscribe
+        // - including its priming report - or an inbound report on the
+        // controller side) is in flight until the exchange is acknowledged.
+        // The guard also covers every await of the request/response loop, so
+        // an application cannot reconfigure the node shape mid-traversal.
+        let _guard = self.state.quiescence().guard();
+
         let fetch_meta = |exchange: &mut Exchange| {
             let meta = exchange.rx()?.meta();
             if meta.proto_id != PROTO_ID_INTERACTION_MODEL {
@@ -1371,15 +1394,28 @@ where
             let mut dropped_any = false;
 
             loop {
+                // Acquire the quiescence guard *before* `report()` snapshots
+                // the dirty watermark, and hold it for the whole outbound
+                // `ReportData` action: report generation, every chunk, the
+                // inter-chunk status waits and the final acknowledgement. The
+                // snapshot and the data derived from it are therefore one
+                // atomic unit with respect to an application that reconfigures
+                // the node shape at the idle boundary.
+                let guard = self.state.quiescence().guard();
+
                 let Some(mut rctx) = self.state.subscriptions.report(
                     now,
                     event_numbers_watermark,
                     &self.subscriptions_buffers,
                 ) else {
+                    drop(guard);
+
                     break;
                 };
 
                 let result = self.process_subscription(matter, &mut rctx).await;
+
+                drop(guard);
 
                 match result {
                     Ok(true) => rctx.set_keep(),
@@ -1708,6 +1744,32 @@ where
     K: KvBlobStoreAccess,
     N: Networks,
 {
+    /// The quiescence tracker of this Interaction Model.
+    ///
+    /// See [`InteractionQuiescence`] for the contract: the application may
+    /// synchronously reconfigure the node shape once
+    /// [`InteractionQuiescence::wait_idle`] resolves, as long as it does not
+    /// await before committing the change.
+    pub const fn quiescence(&self) -> &InteractionQuiescence {
+        self.state.quiescence()
+    }
+
+    /// Whether no interaction or outbound report is currently in flight.
+    ///
+    /// Shorthand for [`InteractionQuiescence::is_idle`] on
+    /// [`InteractionModel::quiescence`].
+    pub fn is_idle(&self) -> bool {
+        self.quiescence().is_idle()
+    }
+
+    /// Wait until no interaction or outbound report is in flight.
+    ///
+    /// Shorthand for [`InteractionQuiescence::wait_idle`] on
+    /// [`InteractionModel::quiescence`].
+    pub async fn wait_idle(&self) {
+        self.quiescence().wait_idle().await
+    }
+
     /// The node's resource-utilisation metrics, for the `GeneralDiagnostics`
     /// cluster's `DeviceLoadStatus` attribute.
     ///
@@ -1795,6 +1857,10 @@ where
 
     fn im_stats(&self) -> impl ImStats + '_ {
         self
+    }
+
+    fn quiescence(&self) -> Option<&InteractionQuiescence> {
+        Some(self.state.quiescence())
     }
 
     fn notify_fabric_removed(&self, fab_idx: NonZeroU8) {
